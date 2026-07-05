@@ -1,0 +1,3 @@
+/home/Yiann/Projects/DASD/test_vitis3/platform/zynq_fsbl/build/CMakeFiles/fsbl.elf.dir
+/home/Yiann/Projects/DASD/test_vitis3/platform/zynq_fsbl/build/CMakeFiles/edit_cache.dir
+/home/Yiann/Projects/DASD/test_vitis3/platform/zynq_fsbl/build/CMakeFiles/rebuild_cache.dir

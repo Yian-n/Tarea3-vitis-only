@@ -1,0 +1,211 @@
+--- a/hello_world/src/helloworld.c
++++ b/hello_world/src/helloworld.c
+@@ -4,9 +4,9 @@
+ 
+ #include "xaxidma.h"
+ #include "platform.h"
++#include "xil_cache.h"
+ #include "xil_printf.h"
+ #include "xparameters.h"
+-#include "dma_controller.h"
+ 
+ #define KMER_SIZE_BYTES   31
+ #define PADDING_BYTES     1
+@@ -15,10 +15,15 @@
+ #define NUM_KMERS_2       135262
+ #define BUFFER_SIZE_1   (NUM_KMERS_1 * KMER_TOTAL_BYTES)
+ #define BUFFER_SIZE_2   (NUM_KMERS_2 * KMER_TOTAL_BYTES)
++#define N_COMPARE       ((NUM_KMERS_1 < NUM_KMERS_2) ? NUM_KMERS_1 : NUM_KMERS_2)
++#define TX_BYTES        (N_COMPARE * KMER_TOTAL_BYTES)
++#define RX_WORDS        ((N_COMPARE + 31) / 32)
++#define RX_BYTES        (RX_WORDS * sizeof(u32))
++#define DMA_0_ID        XPAR_XAXIDMA_0_BASEADDR
++#define DMA_1_ID        XPAR_XAXIDMA_1_BASEADDR
+ 
++XAxiDma AxiDma0;
+ XAxiDma AxiDma1;
+-XAxiDma AxiDma2;
+-XAxiDma AxiDma3;
+ 
+ FATFS fatfs;
+ FIL fil0, fil1;
+@@ -26,6 +31,7 @@
+ 
+ u8 TxBuffer0[BUFFER_SIZE_1] __attribute__ ((aligned(32)));
+ u8 TxBuffer1[BUFFER_SIZE_2] __attribute__ ((aligned(32)));
++static u32 RxBuffer[RX_WORDS] __attribute__ ((aligned(32)));
+ 
+ 
+ int init_sd_and_read_files() {
+@@ -81,118 +87,80 @@
+ ////////////////////////////////////////////////////////////////////////////////
+     init_platform();
+ 
++    XAxiDma_Config *CfgPtr0; //DMA configuration pointer
+     XAxiDma_Config *CfgPtr1; //DMA configuration pointer
+-    XAxiDma_Config *CfgPtr2; //DMA configuration pointer
+-    XAxiDma_Config *CfgPtr3; //DMA configuration pointer
+ 
+ 	int status;
+-	u8 *TxBufferPtr1;
+-	u8 *TxBufferPtr2;
+-	u8 *RxBufferPtr;
+-
+-    // @todo arreglar el calloc con sus argumentos
+-	// TxBufferPtr1 = calloc (MAX_PKT_LEN);
+-	// TxBufferPtr2 = calloc (MAX_PKT_LEN);
+-	RxBufferPtr = calloc(MAX_PKT_LEN, sizeof(u8));
+ 
+ 	// Initialize the XAxiDma device
+-	CfgPtr1 = XAxiDma_LookupConfig(DMA_DEV_ID);
+-	if (!CfgPtr1) {
+-		xil_printf("No config found for %d\r\n", DMA_DEV_ID);
+-		return XST_FAILURE;
+-	}
+-	CfgPtr2 = XAxiDma_LookupConfig(DMA_DEV_ID);
+-	if (!CfgPtr2) {
+-		xil_printf("No config found for %d\r\n", DMA_DEV_ID);
++	CfgPtr0 = XAxiDma_LookupConfig(DMA_0_ID);
++	if (!CfgPtr0) {
++		xil_printf("No config found for DMA0\r\n");
+ 		return XST_FAILURE;
+ 	}
+-	CfgPtr3 = XAxiDma_LookupConfig(DMA_DEV_ID);
+-	if (!CfgPtr3) {
+-		xil_printf("No config found for %d\r\n", DMA_DEV_ID);
++	CfgPtr1 = XAxiDma_LookupConfig(DMA_1_ID);
++	if (!CfgPtr1) {
++		xil_printf("No config found for DMA1\r\n");
+ 		return XST_FAILURE;
+ 	}
+ 
+-	status = XAxiDma_CfgInitialize(&AxiDma1, CfgPtr1);
++	status = XAxiDma_CfgInitialize(&AxiDma0, CfgPtr0);
+ 	if (status != XST_SUCCESS) {
+-		xil_printf("Initialization failed %d\r\n", status);
++		xil_printf("DMA0 initialization failed %d\r\n", status);
+ 		return XST_FAILURE;
+ 	}
+-	status = XAxiDma_CfgInitialize(&AxiDma2, CfgPtr2);
+-	if (status != XST_SUCCESS) {
+-		xil_printf("Initialization failed %d\r\n", status);
+-		return XST_FAILURE;
+-	}
+-	status = XAxiDma_CfgInitialize(&AxiDma3, CfgPtr3);
++	status = XAxiDma_CfgInitialize(&AxiDma1, CfgPtr1);
+ 	if (status != XST_SUCCESS) {
+-		xil_printf("Initialization failed %d\r\n", status);
++		xil_printf("DMA1 initialization failed %d\r\n", status);
+ 		return XST_FAILURE;
+ 	}
+ 
+-	if(XAxiDma_HasSg(&AxiDma1)){
+-		xil_printf("Device configured as SG mode \r\n");
+-		return XST_FAILURE;
+-	}
+-	if(XAxiDma_HasSg(&AxiDma2)){
++	if(XAxiDma_HasSg(&AxiDma0)){
+ 		xil_printf("Device configured as SG mode \r\n");
+ 		return XST_FAILURE;
+ 	}
+-	if(XAxiDma_HasSg(&AxiDma3)){
++	if(XAxiDma_HasSg(&AxiDma1)){
+ 		xil_printf("Device configured as SG mode \r\n");
+ 		return XST_FAILURE;
+ 	}
+ 
+-	XAxiDma_IntrDisable(&AxiDma1, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
+-	XAxiDma_IntrDisable(&AxiDma2, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
+-	XAxiDma_IntrDisable(&AxiDma3, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
++	XAxiDma_IntrDisable(&AxiDma0, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
++	XAxiDma_IntrDisable(&AxiDma0, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
++	XAxiDma_IntrDisable(&AxiDma1, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
++////////////////////////////////////////////////////////////////////////////////
+ 
++    Xil_DCacheFlushRange((UINTPTR)TxBuffer0, TX_BYTES);
++    Xil_DCacheFlushRange((UINTPTR)TxBuffer1, TX_BYTES);
++    Xil_DCacheFlushRange((UINTPTR)RxBuffer, RX_BYTES);
++
++    status = XAxiDma_SimpleTransfer(&AxiDma0, (UINTPTR)RxBuffer, RX_BYTES, XAXIDMA_DEVICE_TO_DMA);
++    if (status != XST_SUCCESS){
++        xil_printf("DMA0 S2MM transfer failed...\r\n");
++        return XST_FAILURE;
++    }
+ 
+-	Xil_DCacheFlushRange((UINTPTR)TxBufferPtr1, MAX_PKT_LEN);
+-	Xil_DCacheFlushRange((UINTPTR)TxBufferPtr2, MAX_PKT_LEN);
+-	Xil_DCacheFlushRange((UINTPTR)RxBufferPtr, MAX_PKT_LEN);
+-
+-	XAxiDma_Reset(&AxiDma1);
+-	XAxiDma_Reset(&AxiDma2);
+-	XAxiDma_Reset(&AxiDma3);
+-////////////////////////////////////////////////////////////////////////////////
++    status = XAxiDma_SimpleTransfer(&AxiDma0, (UINTPTR)TxBuffer0, TX_BYTES, XAXIDMA_DMA_TO_DEVICE);
++    if (status != XST_SUCCESS){
++        xil_printf("DMA0 MM2S transfer failed...\r\n");
++        return XST_FAILURE;
++    }
++
++    status = XAxiDma_SimpleTransfer(&AxiDma1, (UINTPTR)TxBuffer1, TX_BYTES, XAXIDMA_DMA_TO_DEVICE);
++    if (status != XST_SUCCESS){
++        xil_printf("DMA1 MM2S transfer failed...\r\n");
++        return XST_FAILURE;
++    }
+ 
+-    size_t n = NUM_KMERS_1 < NUM_KMERS_2 ? NUM_KMERS_1 : NUM_KMERS_2;
+-    size_t compared_kmers_size = (n+31)>>5;
+-    unsigned* compared_kmers = (unsigned*)calloc(compared_kmers_size, sizeof(unsigned));
+-
+-    for (size_t i=0; i < (n+31)>>5; ++i) {
+-        size_t limit = (i+1)<<5 < n ? (i+1)<<5 : n;
+-        for (size_t j=0; j+(i<<5) < limit; ++j) {
+-            // Send each kmer
+-            for (size_t k=0; k<8; ++k) {
+-	            status = XAxiDma_MM2Stransfer(&AxiDma1,(UINTPTR) &TxBuffer1[((i<<5)+j) + (k<<2)], MAX_PKT_LEN);
+-                if (status != XST_SUCCESS){
+-                    xil_printf("XAXIDMA_DMA_TO_DEVICE transfer failed...\r\n");
+-                    return XST_FAILURE;
+-                }
+-	            status = XAxiDma_MM2Stransfer(&AxiDma2,(UINTPTR) &TxBuffer2[((i<<5)+j) + (k<<2)], MAX_PKT_LEN);
+-                if (status != XST_SUCCESS){
+-                    xil_printf("XAXIDMA_DMA_TO_DEVICE transfer failed...\r\n");
+-                    return XST_FAILURE;
+-                }
+-                while(XAxiDma_Busy(&AxiDma1, XAXIDMA_DMA_TO_DEVICE) || XAxiDma_Busy(&AxiDma2, XAXIDMA_DMA_TO_DEVICE)){
+-                    xil_printf("Transfering data to device.\r\n");
+-                }
+-            }
+-        }
+-        // For every 32 kmers read a uint32 from the PL
+-        unsigned kmer_cmp = 0;
+-        status = XAxiDma_S2MMtransfer(&AxiDma3, (UINTPTR) RxBufferPtr, MAX_PKT_LEN);
+-        if (status != XST_SUCCESS){
+-            xil_printf("XAXIDMA_DEVICE_TO_DMA transfer failed...\r\n");
+-            return XST_FAILURE;
+-        }
+-        while(XAxiDma_Busy(&AxiDma3, XAXIDMA_DEVICE_TO_DMA)){
+-            xil_printf("Reciving data from device.\r\n");
+-        }
+-        kmer_cmp = *((unsigned*) RxBufferPtr);
+-        compared_kmers[i] = kmer_cmp;
++    while (XAxiDma_Busy(&AxiDma0, XAXIDMA_DMA_TO_DEVICE) ||
++           XAxiDma_Busy(&AxiDma1, XAXIDMA_DMA_TO_DEVICE) ||
++           XAxiDma_Busy(&AxiDma0, XAXIDMA_DEVICE_TO_DMA)) {
+     }
+ 
++    Xil_DCacheInvalidateRange((UINTPTR)RxBuffer, RX_BYTES);
++
++    unsigned* compared_kmers = (unsigned*)RxBuffer;
++    size_t compared_kmers_size = RX_WORDS;
++
+     // Create histogram
+     size_t hist_size = get_max_stride(compared_kmers, compared_kmers_size) + 1;
+     unsigned* histogram = (unsigned*)calloc(hist_size, sizeof(unsigned));
+@@ -205,7 +173,6 @@
+     }
+ 
+     // Clean memory
+-    free(compared_kmers);
+     free(histogram);
+ 
+     return 0;
