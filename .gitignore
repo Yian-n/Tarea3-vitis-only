@@ -19,3 +19,9 @@
 
 _ide/logs
 _ide/.wsdata
+
+_ide/
+platform/
+
+*.idx
+Session.vim
