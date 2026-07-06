@@ -30,3 +30,13 @@ hello_world/src/compile_commands.json
 diffs/
 
 hello_world/src/CMakeLists.txt
+hello_world/compile_commands.json
+
+archivos_proyecto_zybo/
+hello_world/helloworld.c.dma_changes.diff
+hello_world/src/.clangd
+hello_world/src/Hello_worldExample.cmake
+hello_world/src/UserConfig.cmake
+hello_world/src/app.yaml
+hello_world/vitis-comp.json
+
