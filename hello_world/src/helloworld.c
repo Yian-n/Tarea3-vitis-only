@@ -1,11 +1,15 @@
 #include "ff.h"
-#include <stdlib.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #include "xaxidma.h"
 #include "platform.h"
 #include "xil_cache.h"
 #include "xil_printf.h"
+#include "xiltimer.h"
+#include "xil_io.h"
 #include "xparameters.h"
 
 #define KMER_SIZE_BYTES   31
@@ -27,9 +31,9 @@
 XAxiDma AxiDma0;
 XAxiDma AxiDma1;
 
+FRESULT res;
 FATFS fatfs;
-FIL fil0, fil1;
-
+FIL fil0, fil1, fil2;
 
 u8 TxBuffer0[BUFFER_SIZE_1] __attribute__ ((aligned(32)));
 u8 TxBuffer1[BUFFER_SIZE_2] __attribute__ ((aligned(32)));
@@ -37,11 +41,10 @@ static u32 RxBuffer[RX_WORDS] __attribute__ ((aligned(32)));
 
 
 int init_sd_and_read_files() {
-    FRESULT res;
     UINT bytesRead;
 
     // 1. Montar SD
-    res = f_mount(&fatfs, "0:/", 1);
+    res = f_mount(&fatfs, "0:", 1);
     if (res != FR_OK) return XST_FAILURE;
 
     // 2. Abrir archivos
@@ -79,17 +82,24 @@ typedef struct {
 
 size_t get_max_stride(unsigned* a, size_t n);
 void count_strides(unsigned* a, size_t n, unsigned* stride_count);
+unsigned sw_validation();
+int write_histogram_file(unsigned* histogram, size_t n);
 
 int main() {
-      init_platform();
+    XTime t_start0, t_start1, t_end;
+    unsigned long long u_time0, u_time1, u_time2;
+
+    xil_printf("Hello world.\r\n");
+
+    init_platform();
 
     if (init_sd_and_read_files() != XST_SUCCESS) {
-        xil_printf("Error al leer los archivos\n");
+        xil_printf("Error al leer los archivos\r\n");
         return 1;
     }
 
 ////////////////////////////////////////////////////////////////////////////////
-
+    XTime_GetTime(&t_start0);
 
     XAxiDma_Config *CfgPtr0; 
     XAxiDma_Config *CfgPtr1; 
@@ -136,6 +146,8 @@ int main() {
     Xil_DCacheFlushRange((UINTPTR)TxBuffer1, TX_BYTES);
     Xil_DCacheFlushRange((UINTPTR)RxBuffer, RX_BYTES);
 
+    XTime_GetTime(&t_start1);
+
     status = XAxiDma_SimpleTransfer(&AxiDma0, (UINTPTR)RxBuffer, RX_BYTES, XAXIDMA_DEVICE_TO_DMA);
     if (status != XST_SUCCESS){
         xil_printf("DMA0 S2MM transfer failed...\r\n");
@@ -161,6 +173,14 @@ int main() {
 
     Xil_DCacheInvalidateRange((UINTPTR)RxBuffer, RX_BYTES);
 
+    // Validar que termino el PL
+    // Polling in_status hasta que sea 1
+    while(!Xil_In32(XPAR_AXIREGS_0_BASEADDR+4));
+    unsigned matchers = Xil_In32(XPAR_AXIREGS_0_BASEADDR);
+    XTime_GetTime(&t_end);
+    u_time0 = (t_end-t_start0)*1000000/COUNTS_PER_SECOND;
+    u_time1 = (t_end-t_start1)*1000000/COUNTS_PER_SECOND;
+
     unsigned* compared_kmers = (unsigned*)RxBuffer;
     size_t compared_kmers_size = RX_WORDS;
 
@@ -172,7 +192,26 @@ int main() {
     // Print results
     for (size_t i=0; i<hist_size; ++i) {
         if (histogram[i])
-            xil_printf("Length %u = Count %u\n", i, histogram[i]);
+            xil_printf("Length %u = Count %u\r\n", i, histogram[i]);
+    }
+
+    // Sw validation
+    XTime_GetTime(&t_start0);
+    unsigned sw_matches = sw_validation();
+    XTime_GetTime(&t_end);
+    u_time2 = (t_end-t_start0)*1000000/COUNTS_PER_SECOND;
+    ////////////////
+    xil_printf("Number of matches from PL: %u\r\n", matchers);
+    xil_printf("Number of matches from sw: %u\r\n", sw_matches);
+
+    xil_printf("PL time =             %llu us\r\n", u_time0);
+    xil_printf("PL time (no config) = %llu us\r\n", u_time1);
+    xil_printf("PS time =             %llu us\r\n", u_time2);
+
+    // Save histogram
+    if(write_histogram_file(histogram, hist_size) != XST_SUCCESS) {
+        xil_printf("Error al escribir el histograma.\r\n");
+        return 1;
     }
 
     // Clean memory
@@ -223,4 +262,45 @@ void count_strides(unsigned* a, size_t n, unsigned* stride_count) {
             } 
         }
     }
+}
+
+unsigned sw_validation() {
+    size_t matches = 0;
+    size_t n = BUFFER_SIZE_1 < BUFFER_SIZE_2 ? BUFFER_SIZE_1 : BUFFER_SIZE_2;
+
+    for (size_t i = 0; i<n; i+=32) {
+        if (memcmp(TxBuffer0 + i, TxBuffer1 + i, 31) == 0) ++matches;
+    }
+
+    return matches;
+}
+
+
+int write_histogram_file(unsigned* histogram, size_t n) {
+    UINT bytesWritten;
+    // 1. Abrir archivos
+    if (f_open(&fil2, "hist.txt", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return XST_FAILURE;
+
+    // 2. Leer y aplicar Padding
+    char s[10];
+    char space = ' ', endl = '\n', colon = ':';
+    for (size_t i=0, j; i<n; ++i) {
+        itoa(i, s, 10);
+        for (j=0; s[j]; ++j); // find null terminated char pos
+
+        f_write(&fil2, s, j, &bytesWritten);
+        f_write(&fil2, &space, 1, &bytesWritten);
+        f_write(&fil2, &colon, 1, &bytesWritten);
+        f_write(&fil2, &space, 1, &bytesWritten);
+
+        itoa(histogram[i], s, 10);
+        for (j=0; s[j]; ++j); // find null terminated char pos
+        f_write(&fil2, s, j, &bytesWritten);
+        f_write(&fil2, &endl, 1, &bytesWritten);
+    }
+
+    xil_printf("Archivo escrito.\r\n");
+    f_close(&fil2);
+
+    return XST_SUCCESS;
 }

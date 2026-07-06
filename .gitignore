@@ -25,3 +25,8 @@ platform/
 
 *.idx
 Session.vim
+hello_world/src/CMakeLists.txt
+hello_world/src/compile_commands.json
+diffs/
+
+hello_world/src/CMakeLists.txt
